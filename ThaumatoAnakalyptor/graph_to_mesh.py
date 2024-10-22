@@ -89,7 +89,7 @@ def flatten(save_path, mesh_path):
         input_directory = os.path.dirname(mesh_output_path)
         # Filename for the energies file
         energies_file = os.path.join(input_directory, 'energies_flatboi.txt')
-        print_array_to_file(harmonic_energies, energies_file)       
+        print_array_to_file(harmonic_energies, energies_file)
 
         # save harmonic_uvs as pkl
         with open(harmonic_uvs_path, 'wb') as f:
@@ -107,9 +107,9 @@ def flatten(save_path, mesh_path):
 def flatten_subprocess(mesh_path):
     # Call mesh_to_surface as a separate process
     command = [
-                "python3", "-m", "ThaumatoAnakalyptor.slim_uv", 
-                "--path", mesh_path, 
-                "--iter", str(5), 
+                "python3", "-m", "ThaumatoAnakalyptor.slim_uv",
+                "--path", mesh_path,
+                "--iter", str(5),
                 "--ic", "ordered"
             ]
     # Running the command
@@ -139,7 +139,7 @@ def compute_means_adjacent(adjacent_ts, adjacent_normals, winding_direction):
                 dict_ts[t_] = normal_
             dict_list.append(dict_ts)
         t_normals_dict_list.append(dict_list)
-    
+
     def print_none_vs_means(t_means):
         count_fixed = 0
         count_total = 0
@@ -218,8 +218,8 @@ def compute_means_adjacent(adjacent_ts, adjacent_normals, winding_direction):
         for i in range(len(t_means)):
             n_sel = sum([1 for u in range(column_length) if t_means[i][u] is not None])
             nr_selected.append(n_sel)
-        
-        # sort descending and get indices of top % of selected t values. 
+
+        # sort descending and get indices of top % of selected t values.
         sorted_indices = np.argsort(nr_selected)[::-1]
 
         # Fix top % of nr of selected t values
@@ -275,7 +275,7 @@ def compute_means_adjacent(adjacent_ts, adjacent_normals, winding_direction):
                 count_fixed += 1
                 last_t = t_means[i][u]
 
-    return t_means, normals_means 
+    return t_means, normals_means
 
 class WalkToSheet():
     def __init__(self, graph, path, start_point=[3164, 3476, 3472], scale_factor=1.0, split_width=50000):
@@ -306,7 +306,7 @@ class WalkToSheet():
         print(f"Shape of patch_points: {np.array(points).shape}")
 
         return points, normals, colors
-    
+
     def build_points_reference(self, graph_path):
         graph = load_graph(graph_path)
 
@@ -343,12 +343,12 @@ class WalkToSheet():
         start_index = np.searchsorted(points[:, 3], winding_angle - max_angle_diff, side='left')
         end_index = np.searchsorted(points[:, 3], winding_angle + max_angle_diff, side='right')
         return start_index, end_index
-    
+
     def extract_all_same_vector(self, angle_vector, vector):
         # Check if the angle_vector is already in the dictionary
         if (tuple(vector) in angle_vector_indices_dp):
             return angle_vector_indices_dp[tuple(vector)]
-        
+
         indices = []
         i = 0
         first_found = None
@@ -365,20 +365,20 @@ class WalkToSheet():
             if index_dif is None:
                 i += 1
             else:
-                i += index_dif                  
+                i += index_dif
 
         # Add to dictionary
         angle_vector_indices_dp[tuple(vector)] = indices
         return indices
-    
+
     # Calculate initial means of each list, handle empty lists by setting means to None
     def calculate_means(self, ts_lists):
         res = []
         for ts in ts_lists:
             res_ = [np.mean(t) if len(t) > 0 else None for t in ts]
             res.append(res_)
-        return res    
-    
+        return res
+
     def find_inner_outermost_winding_direction(self, t_means, angle_vector):
         # Split t_means into outermost and innermost half
         t_means_outermost_half = t_means[:len(t_means)//2]
@@ -435,7 +435,7 @@ class WalkToSheet():
             count += 1
             mean_innermost_ts += np.min(ts_angle)
             mean_outermost_ts += np.max(ts_angle)
-        
+
         # get mean values
         if count == 0:
             print("[ERROR (find_inner_outermost_winding_direction)]: No t values found.")
@@ -449,7 +449,7 @@ class WalkToSheet():
 
     def initial_full_pointset(self, t_means, normals_means, angle_vector, mean_innermost_ts, mean_outermost_ts, winding_direction):
         mean_dist = mean_innermost_ts - mean_outermost_ts
-        
+
         def adjacent_means(position, t_mean):
             # Determine the valid next mean
             next_mean = None
@@ -495,7 +495,7 @@ class WalkToSheet():
 
             if next_mean == prev_mean: # if next and prev mean are the same, space them apart
                 next_mean = prev_mean + mean_dist
-            
+
             return prev_mean, prev_ind, next_mean, next_ind
 
         computed_vectors_set = set()
@@ -506,7 +506,7 @@ class WalkToSheet():
             interpolated_ts.append([None]*len(t_means[i]))
             interpolated_normals.append([None]*len(t_means[i]))
             fixed_points.append([False]*len(t_means[i]))
-        
+
         for i in range(len(t_means)):
             curve_angle_vector = angle_vector[i]
             if not tuple(curve_angle_vector) in computed_vectors_set:
@@ -526,7 +526,7 @@ class WalkToSheet():
                         continue
                     adjacent_vector_ts = [same_vector_ts[a][z] for a in range(len(same_vector_ts))]
                     prev_mean, prev_ind, next_mean, next_ind = adjacent_means(e, adjacent_vector_ts)
-                    
+
                     # Interpolate between the previous and next mean
                     if (next_ind - prev_ind) != 0:
                         interpolated_t = (next_mean - prev_mean) / (next_ind - prev_ind) * (e - prev_ind) + prev_mean
@@ -680,12 +680,12 @@ class WalkToSheet():
                 check_iterations += 1
                 # update the range that had changes
                 interpolated_ts_range_valid_check = [i_ts for i_ts in interpolated_ts_range if interpolated_ts_range_valid[i_ts]]
-            
+
             if not anything_changed:
                 break
 
         return interpolated_ts, interpolated_normals, fixed_points
-    
+
     def deduct_ordered_pointset_neighbours(self, ordered_pointset, angle_vector, winding_direction):
         # create a dictionary with the indices of the points in the ordered pointset as keys and a list of the indices of the neighbouring points as values
         neighbours_dict = {}
@@ -735,7 +735,7 @@ class WalkToSheet():
                             else:
                                 neighbours_dict[dict_key]["back"] = (j+l, k)
         return neighbours_dict
-    
+
     def optimize_adjacent(self, interpolated_ts, neighbours_dict, fixed_points, learning_rate=0.1):
         # Optimize the full pointset for smooth surface with best guesses for interpolated t values
         error_val_d = 0.01
@@ -757,7 +757,7 @@ class WalkToSheet():
             self.detect_and_unfix_wrong_fixed_adjacent(neighbours_dict, interpolated_ts, fixed_points)
 
         return interpolated_ts
-    
+
     def optimize_adjacent_cpp(self, interpolated_ts, neighbours_dict, fixed_points, learning_rate=0.1, iterations=3, error_val_d=0.01, unfix_factor=3.0, verbose=True):
         # translate neighbours_dict to list[list[list[list[int]]]] (i, j, [front, back, top, bottom, left, right], [i_n, j_n])
         neighbours_list = []
@@ -793,36 +793,36 @@ class WalkToSheet():
                     neighbours_list[i][j].append([int(neighbours["right"][0]), int(neighbours["right"][1])])
                 else:
                     neighbours_list[i][j].append([int(-1), int(-1)])
-        
+
         # convert interpolated_ts to list[list[float]]
         interpolated_ts_list = []
         for i in range(len(interpolated_ts)):
             interpolated_ts_list.append([])
             for j in range(len(interpolated_ts[i])):
                 interpolated_ts_list[i].append(float(interpolated_ts[i][j]))
-        
+
         # convert fixed_points to list[list[bool]]
         fixed_points_list = []
         for i in range(len(fixed_points)):
             fixed_points_list.append([])
             for j in range(len(fixed_points[i])):
                 fixed_points_list[i].append(bool(fixed_points[i][j]))
-        
+
         # call C++ function
         interpolated_ts_list = pointcloud_processing.optimize_adjacent(
-                                    interpolated_ts_list, 
-                                    fixed_points_list, 
-                                    neighbours_list, 
-                                    learning_rate=float(learning_rate), 
+                                    interpolated_ts_list,
+                                    fixed_points_list,
+                                    neighbours_list,
+                                    learning_rate=float(learning_rate),
                                     iterations=int(iterations),
                                     error_val_d=float(error_val_d),
                                     unfix_factor=float(unfix_factor),
                                     verbose=bool(verbose)
                                     )
-        
+
         return interpolated_ts_list
-                
-    
+
+
     def ordered_pointset_to_3D(self, interpolated_ts, ordered_umbilicus_points, angle_vector):
         # go from interpolated t values to ordered pointset (3D points)
         interpolated_points = []
@@ -834,13 +834,13 @@ class WalkToSheet():
                 else:
                     raise ValueError("Interpolated t is None")
         return interpolated_points
-    
+
     def value_from_key(self, key, ordered_pointset):
         if key is None:
             return None
         else:
             return ordered_pointset[key[0]][key[1]]
-                    
+
     def calculate_ms(self, ordered_pointset, neighbours_dict):
         m_r = [None]*len(ordered_pointset)
         m_l = [None]*len(ordered_pointset)
@@ -904,7 +904,7 @@ class WalkToSheet():
                 m_ts[i][k] = m_ts_
 
         return r, l, m_r, m_l, m_ts
-    
+
     def solve_for_t_individual(self, r, l, m_r, m_l, m_ts, a=0.01):
         t_ts = m_ts
         t_total = t_ts
@@ -923,7 +923,7 @@ class WalkToSheet():
             t_total = 0.0
 
         return t_total
-    
+
     def respect_non_overlapping(self, i, j, neighbours_dict, interpolated_ts, new_interpolated_ts, new_ts_d):
         # respect the non-overlapping invariant of the ordered pointset
         def side_of(ts_, n):
@@ -969,7 +969,7 @@ class WalkToSheet():
                 # only go 50% of the way
                 new_ts_d *= 0.5
         return new_ts_d
-    
+
     def compute_interpolated_adjacent(self, neighbours_dict, interpolated_ts, fixed_points, learning_rate=0.1):
         r, l, m_r, m_l, m_ts = self.calculate_ms(interpolated_ts, neighbours_dict)
         error_val = 0.0
@@ -987,9 +987,9 @@ class WalkToSheet():
                     d_t = self.respect_non_overlapping(i, j, neighbours_dict, interpolated_ts, new_interpolated_ts, d_t)
                     error_val += abs(d_t)
                     new_interpolated_ts[i][j] = interpolated_ts[i][j] + learning_rate * d_t
-        
+
         return new_interpolated_ts, error_val
-    
+
     def interpolated_adjacent_errors(self, neighbours_dict, interpolated_ts):
         # Calculate the errors for all points
         errors = [[None]*len(interpolated_ts[i]) for i in range(len(interpolated_ts))]
@@ -1005,7 +1005,7 @@ class WalkToSheet():
                 d_t = self.respect_non_overlapping(i, j, neighbours_dict, interpolated_ts, interpolated_ts, d_t)
                 errors[i][j] = abs(d_t)
         return errors
-    
+
     def detect_and_unfix_wrong_fixed_adjacent(self, neighbours_dict, interpolated_ts, fixed_points):
         # Detect wrong fixed points
         errors = self.interpolated_adjacent_errors(neighbours_dict, interpolated_ts)
@@ -1024,7 +1024,7 @@ class WalkToSheet():
         for i in range(len(ordered_pointset)):
             result_ts.append([None]*len(ordered_pointset[i]))
             result_normals.append([None]*len(ordered_pointset[i]))
-            
+
         for i in tqdm(range(len(ordered_pointset))):
             curve_angle_vector = angle_vector[i]
             if tuple(curve_angle_vector) in computed_vectors_set:
@@ -1033,7 +1033,7 @@ class WalkToSheet():
             # get all indices with the same angle vector
             same_vector_indices = self.extract_all_same_vector(angle_vector, curve_angle_vector)
             same_vector_ts = [ordered_pointset[j] for j in same_vector_indices]
-    
+
             same_vector_normals = [ordered_normals[j] for j in same_vector_indices]
             t_means, normals_means = compute_means_adjacent(same_vector_ts, same_vector_normals, winding_direction)
 
@@ -1048,7 +1048,7 @@ class WalkToSheet():
                 #         result_normals[j][o] = np.array([1.0, 0.0, 0.0])
 
         return result_ts, result_normals
-    
+
     def interpolate_ordered_pointset_multithreaded(self, ordered_pointset, ordered_normals, angle_vector, winding_direction):
         computed_vectors_set = set()
         result_ts = []
@@ -1056,7 +1056,7 @@ class WalkToSheet():
         for i in range(len(ordered_pointset)):
             result_ts.append([None]*len(ordered_pointset[i]))
             result_normals.append([None]*len(ordered_pointset[i]))
-            
+
         args = []
         list_same_v_i = []
         for i in tqdm(range(len(ordered_pointset))):
@@ -1068,10 +1068,10 @@ class WalkToSheet():
             same_vector_indices = self.extract_all_same_vector(angle_vector, curve_angle_vector)
             same_vector_ts = [ordered_pointset[j] for j in same_vector_indices]
             same_vector_normals = [ordered_normals[j] for j in same_vector_indices]
-    
+
             args.append((same_vector_ts, same_vector_normals, winding_direction))
             list_same_v_i.append(same_vector_indices)
-            
+
         with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
             results = list(tqdm(pool.imap(compute_means_adjacent_args, args), total=len(args), desc="Interpolating ordered pointset"))
 
@@ -1081,7 +1081,7 @@ class WalkToSheet():
                 result_normals[j] = normals_mean[e]
 
         return result_ts, result_normals
-    
+
     def clip_valid_windings(self, result_ts, result_normals, angle_vector, angle_step, valid_p_winding=0.1, valid_p_z=0.1):
         # Clip away invalid windings at the beginning and end of the ordered pointset
         steps_per_winding = 360 / angle_step
@@ -1100,7 +1100,7 @@ class WalkToSheet():
             else:
                 break
         print(f"Found valid start index: {valid_start_indx}")
-        
+
         valid_end_indx = nr_windings
         for i in range(nr_windings-2, valid_start_indx, -1): # skip last winding
             start_index = int(i * steps_per_winding)
@@ -1130,17 +1130,18 @@ class WalkToSheet():
             # reset same vector indices
             global angle_vector_indices_dp
             angle_vector_indices_dp = {}
+        else:
+            valid_ts = []
+            valid_normals = []
+            angle_vector = []
 
         return [valid_ts], [valid_normals], [angle_vector]
-    
-    def clip_valid_angles_fragment(self, result_ts, result_normals, angle_vector, angle_step, valid_p_winding=0.1, valid_p_z=0.1):
+
+    def clip_valid_angles_fragment(self, result_ts, result_normals, angle_vector, angle_step, valid_p_winding=0.01, valid_p_z=0.01):
         # Clip away invalid windings at the beginning and end of the ordered pointset
         steps_per_winding = 360 / angle_step / 120
         nr_windings = int(np.ceil(len(result_ts)/steps_per_winding))
 
-        valid_ts_s = []
-        valid_normals_s = []
-        angle_vector_s = []
         start_indices = []
         end_indices = []
 
@@ -1161,7 +1162,7 @@ class WalkToSheet():
                 else:
                     break
             print(f"Found valid start index: {valid_start_indx}")
-            
+
             valid_end_indx = valid_start_indx
             for i in range(valid_end_indx, nr_windings-2): # skip last winding
                 start_index = int(i * steps_per_winding)
@@ -1175,14 +1176,12 @@ class WalkToSheet():
                 else:
                     break
 
-            print(f"Clipped windings from {valid_start_indx} to {valid_end_indx}. Total length: {nr_windings}.")
             # Add some extra windings
             if valid_start_indx < valid_end_indx:
-                if valid_start_indx > 0:
-                    valid_start_indx -= 1
-                if valid_end_indx < nr_windings:
-                    valid_end_indx += 1
+                valid_start_indx = max(valid_start_indx - 3, 0)
+                valid_end_indx = min(valid_end_indx + 3, nr_windings)
             # Translate indices from winding to pointset indices
+            print(f"Clipped fragment windings from {valid_start_indx} to {valid_end_indx}. Total length: {nr_windings}.")
             valid_start_indx_ = int(valid_start_indx * steps_per_winding)
             valid_end_indx_ = min(int(valid_end_indx * steps_per_winding), len(result_ts))
 
@@ -1196,11 +1195,11 @@ class WalkToSheet():
                 angle_vector_indices_dp = {}
 
         return start_indices, end_indices
-    
+
     def valid_z_values_indices(self, result_ts, valid_p_z=0.1):
         # Clip away invalid z values
         assert len(result_ts) > 0, "No t values found."
-        
+
         z_height = len(result_ts[0])
 
         valid_bottom_index = 0
@@ -1224,10 +1223,10 @@ class WalkToSheet():
                     valid_top_count += 1
             if valid_top_count / len(result_ts) > valid_p_z:
                 break
-            
+
         print(f"Clipped z values from {valid_bottom_index} to {valid_top_index}. Total length: {z_height}.")
         return valid_bottom_index, valid_top_index
-    
+
     def check_valid_winding(self, winding_ts, winding_normals, valid_p_winding=0.25, valid_p_z=0.25):
         # if more than valid_p_z percent of the t values in a step are None, the winding step is invalid
         # if more than valid_p_winding percent of the winding steps are invalid, the winding is invalid
@@ -1273,8 +1272,8 @@ class WalkToSheet():
         os.makedirs(test_folder)
         test_pointset_ply_path = os.path.join(test_folder, f"ordered_pointset_test_cpp.ply")
         self.pointcloud_from_ordered_pointset(pointset, os.path.join(self.save_path, test_pointset_ply_path))
-           
-    def rolled_ordered_pointset(self, points, normals, continue_from=0, fragment=False, debug=False, angle_step=0.5, z_spacing=10):
+
+    def rolled_ordered_pointset(self, points, normals, continue_from=0, fragment=False, debug=False, angle_step=0.5, z_spacing=10, learning_rate=0.2, iterations=11, unfix_factor=2.5):
         # some debugging visualization of seperate pointcloud windings
         if debug:
             # get winding angles
@@ -1291,6 +1290,8 @@ class WalkToSheet():
             os.makedirs(test_folder)
             # test
             for test_angle in range(int(min_wind), int(max_wind), 360):
+                if (test_angle // 360 % 20) > 2:
+                    continue
                 start_index, end_index = self.points_at_winding_angle(points, test_angle+180, max_angle_diff=180)
                 points_test = points[start_index:end_index]
                 colors_test = points_test[:,3]
@@ -1312,7 +1313,7 @@ class WalkToSheet():
             #         self.pointcloud_from_ordered_pointset([(points, normals)], complete_pointset_ply_path, color=points[:,3])
             #     except:
             #         print("Error saving complete pointset")
-        
+
         print("Using Cpp rolled_ordered_pointset")
         # Set to false to load precomputed partial results during development
         fresh_start = continue_from <= 2
@@ -1348,7 +1349,7 @@ class WalkToSheet():
             result_pkl_path = os.path.join(self.save_path, "results_ts_normals.pkl")
             with open(result_pkl_path, 'rb') as f:
                 (result_ts, result_normals) = pickle.load(f)
-        
+
         ordered_pointsets_final_s = []
         fresh_start3 = continue_from <= 4
         if fresh_start3:
@@ -1356,6 +1357,7 @@ class WalkToSheet():
             if not fragment:
                 valid_ts_s, valid_normals_s, angle_vector_s = self.clip_valid_windings(result_ts, result_normals, angle_vector, angle_step, valid_p_winding=valid_p, valid_p_z=valid_p)
             else:
+                valid_p = 0.1
                 start_indices, end_indices = self.clip_valid_angles_fragment(result_ts, result_normals, angle_vector, angle_step, valid_p_winding=valid_p, valid_p_z=valid_p)
 
                 # optimize before cutting the pointset apart
@@ -1372,10 +1374,10 @@ class WalkToSheet():
                 neighbours_dict = self.deduct_ordered_pointset_neighbours(interpolated_ts, angle_vector_, winding_direction)
 
                 # Optimize the full pointset for smooth surface with best guesses for interpolated t values
-                interpolated_ts = self.optimize_adjacent_cpp(interpolated_ts, neighbours_dict, fixed_points, 
-                                                            learning_rate=0.2, iterations=11, error_val_d=0.0001, unfix_factor=2.5,
+                interpolated_ts = self.optimize_adjacent_cpp(interpolated_ts, neighbours_dict, fixed_points,
+                                                            learning_rate=learning_rate, iterations=iterations, error_val_d=0.0001, unfix_factor=unfix_factor,
                                                             verbose=True)
-                
+
                 valid_ts_s = [interpolated_ts[start_indices[i]-start_index_0:end_indices[i]-start_index_0] for i in range(len(start_indices))]
                 valid_normals_s = [interpolated_normals[start_indices[i]-start_index_0:end_indices[i]-start_index_0] for i in range(len(start_indices))]
                 angle_vector_s = [angle_vector[start_indices[i]:end_indices[i]] for i in range(len(start_indices))]
@@ -1399,10 +1401,10 @@ class WalkToSheet():
                     neighbours_dict = self.deduct_ordered_pointset_neighbours(interpolated_ts, angle_vector, winding_direction)
 
                     # Optimize the full pointset for smooth surface with best guesses for interpolated t values
-                    # interpolated_ts = self.optimize_adjacent_cpp(interpolated_ts, neighbours_dict, fixed_points, 
+                    # interpolated_ts = self.optimize_adjacent_cpp(interpolated_ts, neighbours_dict, fixed_points,
                     #                                             learning_rate=0.1, iterations=7, error_val_d=0.0001, unfix_factor=5.0,
                     #                                             verbose=True)
-                    interpolated_ts = self.optimize_adjacent_cpp(interpolated_ts, neighbours_dict, fixed_points, 
+                    interpolated_ts = self.optimize_adjacent_cpp(interpolated_ts, neighbours_dict, fixed_points,
                                                                 learning_rate=0.2, iterations=11, error_val_d=0.0001, unfix_factor=2.5,
                                                                 verbose=True)
                 else:
@@ -1436,7 +1438,7 @@ class WalkToSheet():
                 # Debug output
                 self.ordered_pointset_to_pointcloud_save(interpolated_ts, interpolated_normals, ordered_umbilicus_points, angle_vector)
 
-                ordered_pointsets_final_s.append(ordered_pointsets_final)     
+                ordered_pointsets_final_s.append(ordered_pointsets_final)
             # Save the ordered_pointsets_final
             ordered_pointsets_final_pkl_path = os.path.join(self.save_path, "ordered_pointsets_final_s.pkl")
             with open(ordered_pointsets_final_pkl_path, 'wb') as f:
@@ -1444,12 +1446,12 @@ class WalkToSheet():
         else:
             ordered_pointsets_final_pkl_path = os.path.join(self.save_path, "ordered_pointsets_final_s.pkl")
             with open(ordered_pointsets_final_pkl_path, 'rb') as f:
-                ordered_pointsets_final_s = pickle.load(f)       
+                ordered_pointsets_final_s = pickle.load(f)
 
         return ordered_pointsets_final_s
-    
+
     def subsample_interpolated_points(self, interpolated_points, mean_distance_threshold=5):
-        # subsample ordered pointset columns to reduce number of columns. they are too dense in the ceter and inflate the mesh size. 
+        # subsample ordered pointset columns to reduce number of columns. they are too dense in the ceter and inflate the mesh size.
         # make it harder to work with, store and flatten. nearly no information lost by subsampling there.
         interpolated_points_ = np.array(interpolated_points)
         interpolated_subsample_indices = []
@@ -1466,7 +1468,7 @@ class WalkToSheet():
             interpolated_subsample_indices.append(i)
         print(f"Taken {len(interpolated_subsample_indices)} ordered columns from {len(interpolated_points)} total.")
         return interpolated_subsample_indices
-    
+
     def save_graph_pointcloud(self, graph_path):
         save_path = os.path.join(self.save_path, "graph_pointcloud.ply")
         print(save_path)
@@ -1481,7 +1483,7 @@ class WalkToSheet():
         pcl.points = o3d.utility.Vector3dVector(points)
         pcl.normals = o3d.utility.Vector3dVector(normals)
         o3d.io.write_point_cloud(save_path, pcl)
-        
+
     def pointcloud_from_ordered_pointset(self, ordered_pointset, filename, color=None):
         points, normals = [], []
         for point, normal in tqdm(ordered_pointset, desc="Building pointcloud"):
@@ -1503,7 +1505,7 @@ class WalkToSheet():
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
         pcd.normals = o3d.utility.Vector3dVector(normals)
-        
+
         if not color is None:
             # color is shape n, 1, go to rgb with hsv
             color = (color - np.min(color)) / (np.max(color) - np.min(color))
@@ -1553,7 +1555,7 @@ class WalkToSheet():
         vertices, normals = shuffling_points_axis(vertices, normals)
         # scale vertices back to CT scan coordinates
         vertices[:, :3] = self.scale_factor * vertices[:, :3]
-        
+
         # Number of rows and columns in the pointset grid
         num_rows = len(ordered_pointsets)
         num_cols = len(ordered_pointsets[0][0]) if num_rows > 0 else 0
@@ -1590,7 +1592,7 @@ class WalkToSheet():
         uv_image = Image.new('L', (n, m), color=255)  # 255 for white background, 0 for black
 
         return mesh, uv_image
-    
+
     def save_mesh(self, mesh, uv_image, filename):
         """
         Save a mesh to a file.
@@ -1619,11 +1621,11 @@ class WalkToSheet():
         # Return the paths to the split meshes
         return split_mesh_paths, stamp
 
-    def unroll(self, fragment=False, debug=False, continue_from=0, z_range=None, angle_step=1, z_spacing=10):
+    def unroll(self, fragment=False, debug=False, continue_from=0, z_range=None, angle_step=1, z_spacing=10, learning_rate=0.2, iterations=11, unfix_factor=2.5):
 
         # Set to false to load precomputed partial results during development
         start_fresh = continue_from <= 1
-        if start_fresh: 
+        if start_fresh:
             # Set to false to load precomputed partial results during development
             start_fresh_build_points = continue_from <= 0
             if start_fresh_build_points:
@@ -1664,7 +1666,7 @@ class WalkToSheet():
 
         pointset_ply_path = os.path.join(self.save_path, "ordered_pointset.ply")
         # get nodes
-        ordered_pointsets_s = self.rolled_ordered_pointset(points_originals_selected, normals_originals_selected, angle_step=angle_step, continue_from=continue_from, fragment=fragment, debug=debug, z_spacing=z_spacing)
+        ordered_pointsets_s = self.rolled_ordered_pointset(points_originals_selected, normals_originals_selected, angle_step=angle_step, continue_from=continue_from, fragment=fragment, debug=debug, z_spacing=z_spacing, learning_rate=learning_rate, iterations=iterations, unfix_factor=unfix_factor)
 
         self.pointcloud_from_ordered_pointset(ordered_pointsets_s[0], pointset_ply_path)
         stamp = None
@@ -1702,6 +1704,9 @@ if __name__ == '__main__':
     parser.add_argument('--z_range', type=int, nargs=2, default=[-2147483648, 2147483647], help='Range of z values to mesh in')
     parser.add_argument('--angle_step', type=float, default=0.5, help='Angle step for the unrolling')
     parser.add_argument('--z_spacing', type=int, default=10, help='Angle step for the unrolling')
+    parser.add_argument('--learning_rate', type=float, default=0.2, help='Learning rate for the optimization')
+    parser.add_argument('--iterations', type=int, default=11, help='Number of iterations for the optimization')
+    parser.add_argument('--unfix_factor', type=float, default=2.5, help='Unfix factor for the optimization. Higher = less unfixed points')
 
     args = parser.parse_args()
 
@@ -1724,10 +1729,10 @@ if __name__ == '__main__':
         z_range[0] = -2147483648
     if z_range[1] > 2147483647:
         z_range[1] = 2147483647
-    
+
     walk = WalkToSheet(graph, args.path, start_point, scale_factor, split_width=args.split_width)
     # walk.save_graph_pointcloud(reference_path)
-    walk.unroll(fragment=args.fragment, debug=args.debug, continue_from=args.continue_from, z_range=z_range, angle_step=args.angle_step, z_spacing=args.z_spacing)
+    walk.unroll(fragment=args.fragment, debug=args.debug, continue_from=args.continue_from, z_range=z_range, angle_step=args.angle_step, z_spacing=args.z_spacing, learning_rate=args.learning_rate, iterations=args.iterations, unfix_factor=args.unfix_factor)
 
 # Example command: python3 -m ThaumatoAnakalyptor.graph_to_mesh --path /scroll.volpkg/working/scroll3_surface_points/point_cloud_colorized_verso_subvolume_blocks --graph /scroll.volpkg/working/scroll3_surface_points/1352_3600_5002/point_cloud_colorized_verso_subvolume_graph_BP_solved.pkl --start_point 1352 3600 5002 --debug
 # python3 -m ThaumatoAnakalyptor.graph_to_mesh --path /scroll2v2_surface_points/point_cloud_colorized_verso_subvolume_blocks --graph /scroll2v2_surface_points/1352_3600_5002/point_cloud_colorized_verso_subvolume_graph_BP_solved.pkl --start_point 1352 3600 5002

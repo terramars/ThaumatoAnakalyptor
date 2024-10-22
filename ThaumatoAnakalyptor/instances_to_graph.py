@@ -18,9 +18,14 @@ from ezdxf.math import Vec3
 import random
 from copy import deepcopy
 import struct
+import multiprocessing
 
 from .instances_to_sheets import select_points, get_vector_mean, alpha_angles, adjust_angles_zero, adjust_angles_offset, add_overlapp_entries_to_patches_list, assign_points_to_tiles, compute_overlap_for_pair, overlapp_score, fit_sheet, winding_switch_sheet_score_raw_precomputed_surface, find_starting_patch, save_main_sheet, update_main_sheet
-from .sheet_to_mesh import load_xyz_from_file, scale_points, umbilicus_xz_at_y
+from .sheet_to_mesh import load_xyz_from_file, scale_points, umbilicus_xz_at_y, shuffling_points_axis
+from .mesh_to_mask3d_labels import set_up_mesh
+from .split_mesh import MeshSplitter
+from .mesh_quality import calculate_winding_angle_pointcloud_instance, align_winding_angles, find_best_alignment
+from .mesh_quality import load_mesh_vertices as load_mesh_vertices_quality
 import sys
 ### C++ speed up Random Walks
 sys.path.append('ThaumatoAnakalyptor/sheet_generation/build')
@@ -138,7 +143,7 @@ def build_patch(main_sheet_patch, subvolume_size, path, sample_ratio=1.0, align_
                     "points": patch_points,
                     "normals": patch_normals,
                     "colors": patch_color,
-                    "anchor_points": [patch_points[0]], 
+                    "anchor_points": [patch_points[0]],
                     "anchor_normals": [anchor_normal],
                     "anchor_angles": [anchor_angle],
                     "angles": adjust_angles_offset(adjust_angles_zero(alpha_angles(patch_normals), - anchor_angle), offset_angle),
@@ -150,7 +155,7 @@ def build_patch(main_sheet_patch, subvolume_size, path, sample_ratio=1.0, align_
                     "patch_prediction_coeff": [patch_coeff],
                     "n": [n],
                     }
-    
+
     return additional_main_patch, offset_angle
 
 def subvolume_surface_patches_folder(file, subvolume_size=50, sample_ratio=1.0):
@@ -334,17 +339,17 @@ class Graph:
             if edge is not None:
                 return edge['certainty']
         return None
-    
+
     def get_edge(self, node1, node2):
         node1 = tuple(int(node1[i]) for i in range(4))
         node2 = tuple(int(node2[i]) for i in range(4))
         if node2 < node1:
             node1, node2 = node2, node1
         return (node1, node2)
-        
+
     def get_edge_ks(self, node1, node2):
         node1 = tuple(int(node1[i]) for i in range(4))
-        node2 = tuple(int(node2[i]) for i in range(4))           
+        node2 = tuple(int(node2[i]) for i in range(4))
         k_factor = 1.0
         # Maintain bidirectional invariant
         if node2 < node1:
@@ -358,7 +363,7 @@ class Graph:
             return ks
         else:
             raise KeyError(f"No edge found from {node1} to {node2}")
-    
+
     def remove_unused_nodes(self, used_nodes):
         used_nodes = set([tuple(int(node[i]) for i in range(4)) for node in used_nodes])
         unused_nodes = []
@@ -368,7 +373,7 @@ class Graph:
                 unused_nodes.append(node)
         self.remove_nodes_edges(unused_nodes)
         self.compute_node_edges()
-        
+
     def update_winding_angles(self, nodes, ks, update_winding_angles=False):
         nodes = [tuple(int(node[i]) for i in range(4)) for node in nodes]
         nodes_ks_dict = {}
@@ -417,7 +422,7 @@ class Graph:
                 for edge in edges:
                     queue.append(edge[0] if edge[0] != node else edge[1])
         return list(visited)
-    
+
     def neighbours(self, node, bfs_depth=3):
         """
         Return the list of neighbours of a node. Using bfs
@@ -435,7 +440,7 @@ class Graph:
                 for edge in edges:
                     queue.append((edge[0] if edge[0] != node else edge[1], depth + 1))
         return visited
-    
+
     def update_neighbours_count(self, new_nodes, nodes, bfs_depth=3):
         """
         Update the neighbours count of the new nodes.
@@ -448,7 +453,7 @@ class Graph:
             to_update_set = to_update_set.union(neighbours_set)
 
             self.nodes[tuple(node)]['neighbours_count'] = len(neighbours_set)
-        
+
         others_to_update = to_update_set.difference(set([tuple(int(n[i]) for i in range(4)) for n in new_nodes]))
         # print(f"Reupdating neighbours count for {len(others_to_update)} other nodes...")
         for node in others_to_update:
@@ -475,11 +480,11 @@ def score_same_block_patches(patch1, patch2, overlapp_threshold, umbilicus_dista
     """
     # Calculate winding switch sheet scores
     distance_raw = umbilicus_distance(patch1, patch2)
-    score_raw, k = np.mean(distance_raw), np.sign(distance_raw)
+    score_raw, k = np.abs(distance_raw), np.sign(distance_raw)
     k = k * overlapp_threshold["winding_direction"] # because of scroll's specific winding direction
 
     score_val = (overlapp_threshold["max_winding_switch_sheet_distance"] - score_raw) / (overlapp_threshold["max_winding_switch_sheet_distance"] - overlapp_threshold["min_winding_switch_sheet_distance"]) # calculate score
-    
+
     score = score_val * overlapp_threshold["winding_switch_sheet_score_factor"]
 
     # Centroid distance between patches
@@ -513,11 +518,11 @@ def process_same_block(main_block_patches_list, overlapp_threshold, umbilicus_di
     def scores_cleaned(direction_scores):
         if len(direction_scores) == 0:
             return []
-        
+
         score_min = min(direction_scores, key=lambda x: x[2]) # return if there were bad scores
         if score_min[2] == -1.0:
             return [(score_min[0], score_min[1], -1.0, score_min[3], score_min[4], score_min[5])]
-        
+
         score = max(direction_scores, key=lambda x: x[2])
         score_val = score[2]
         if score_val < 0.0:
@@ -544,7 +549,7 @@ def process_same_block(main_block_patches_list, overlapp_threshold, umbilicus_di
         # filter and only take the scores closest to the main patch (smallest scores) for each k in +1, -1
         direction1_scores = [score for score in score_switching_sheets_ if score[3] > 0.0]
         direction2_scores = [score for score in score_switching_sheets_ if score[3] < 0.0]
-        
+
         score1 = scores_cleaned(direction1_scores)
         score2 = scores_cleaned(direction2_scores)
         score_switching_sheets += score1 + score2
@@ -647,11 +652,70 @@ def process_block(args):
             if len(score_sheets_patch) > 0:
                 score_sheets_patch = max(score_sheets_patch, key=lambda x: x[2])
                 score_sheets.append(score_sheets_patch)
-    
+
     score_switching_sheets, score_bad_edges = process_same_block(main_block_patches_list, overlapp_threshold, umbilicus_distance)
 
     # Process and return results...
     return score_sheets, score_switching_sheets, score_bad_edges, patches_centroids
+
+def init_worker_build_GT(mesh_file, pointcloud_dir):
+    """
+    Initialize worker for building the ground truth.
+    """
+    global valid_triangles, winding_angles, output_dir, gt_splitter, mesh_gt_stuff
+    valid_triangles, winding_angles, output_dir, gt_splitter = set_up_mesh(mesh_file, pointcloud_dir, continue_from=3, use_tempfile=False) # already initialized, only load data
+    mesh_gt_stuff = load_mesh_vertices_quality(mesh_file, use_tempfile=False) # each worker needs its own copy. # spelufo coordinate system
+    print("Worker initialized for building the ground truth.")
+
+def worker_build_GT(args):
+    # print(f"Processing: {args}")
+    tar_filename, umbilicus_path = args
+    nodes_winding_alignment = []
+
+    if os.path.isfile(tar_filename):
+        with tarfile.open(tar_filename, 'r') as archive, tempfile.TemporaryDirectory() as temp_dir:
+            # Extract all .ply files at once
+            ply_files = [m for m in archive.getmembers() if m.name.endswith(".ply")]
+            archive.extractall(path=temp_dir, members=archive.getmembers())
+
+            # Process each .ply file
+            for i, ply_member in enumerate(ply_files):
+                ply_file_path = os.path.join(temp_dir, ply_member.name)
+                ply_file = ply_member.name
+                # print(ply_file_path)
+                # ids = tuple([*map(int, ply_member.name.split("_"))])
+                ids = tuple([*map(int, tar_filename.split(".")[-2].split("/")[-1].split("_"))]+[int(ply_file.split(".")[-2].split("_")[-1])])
+                ids = (int(ids[0]), int(ids[1]), int(ids[2]), int(ids[3]))
+
+                # 3D instance pointcloud
+                vertices1 = o3d.io.read_point_cloud(ply_file_path)
+                # to numpy
+                vertices1 = np.asarray(vertices1.points)
+                # adjust coordinate frame
+                vertices1 = scale_points(vertices1, 4.0, axis_offset=-500)
+                vertices1_spelufo = vertices1 + 500
+                vertices1, _ = shuffling_points_axis(vertices1, vertices1, [2, 0, 1]) # Scan Coordinate System
+                winding_angles1 = calculate_winding_angle_pointcloud_instance(vertices1, gt_splitter) # instance winding angles. # Takes Scan coordinate system
+
+                # align winding angles
+                winding_angle_difference, winding_angles2, scene2, mesh2, percentage_valid = align_winding_angles(vertices1_spelufo, winding_angles1, mesh_gt_stuff, umbilicus_path, 15, gt_splitter, debug=False) # aling to GT mesh per point. # takes spelufo coordinate system
+                if percentage_valid > 0.5:
+                    best_alignment = find_best_alignment(winding_angle_difference) # best alignment to a wrap
+                    # Adjust winding angle of graph nodes
+                    nodes_winding_alignment.append((ids, best_alignment))
+                    # print(f"Best alignment: {best_alignment}")
+                elif i == 0:
+                    # Check if too far away from GT Mesh
+                    winding_angle_difference, winding_angles2, scene2, mesh2, percentage_valid = align_winding_angles(vertices1_spelufo, winding_angles1, mesh_gt_stuff, umbilicus_path, 210, gt_splitter) # aling to GT mesh per point. # takes spelufo coordinate system
+                    # Still 0 percent -> no patch in this subvolume is valid
+                    if percentage_valid == 0.0:
+                        # print("No valid patches in this subvolume.")
+                        break
+
+                    # print(f"Invalid alignment: {percentage_valid} percentage valid")
+
+    return nodes_winding_alignment
+
 
 class ScrollGraph(Graph):
     def __init__(self, overlapp_threshold, umbilicus_path):
@@ -737,7 +801,7 @@ class ScrollGraph(Graph):
         blocks_tar_files_int = blocks_tar_files_int[filter_mask]
         blocks_tar_files = [blocks_tar_files[i] for i in range(len(blocks_tar_files)) if filter_mask[i]]
         return blocks_tar_files, blocks_tar_files_int
-    
+
     def filter_blocks_z(self, blocks_tar_files, z_min, z_max):
         # Filter blocks by z range
         blocks_tar_files_int = [[int(i) for i in x.split('/')[-1].split('.')[0].split("_")] for x in blocks_tar_files]
@@ -745,9 +809,9 @@ class ScrollGraph(Graph):
         filter_mask = np.logical_and(blocks_tar_files_int[:,1] >= z_min, blocks_tar_files_int[:,1] <= z_max)
         blocks_tar_files = [blocks_tar_files[i] for i in range(len(blocks_tar_files)) if filter_mask[i]]
         return blocks_tar_files
-    
+
     def largest_connected_component(self, delete_nodes=True, min_size=None):
-        print("Finding largest connected component...")        
+        print("Finding largest connected component...")
         # walk the graph from the start node
         visited = set()
         # tqdm object showing process of visited nodes untill all nodes are visited
@@ -774,7 +838,7 @@ class ScrollGraph(Graph):
                     start_node = node
                     break
             if start_node is None:
-                break    
+                break
 
             queue = [start_node]
             component = set()
@@ -809,19 +873,19 @@ class ScrollGraph(Graph):
             for component in components:
                 largest_component.extend(list(component))
         largest_component = set(largest_component)
-        
+
         # Remove all other Nodes, Edges and Node Edges
         if delete_nodes:
             other_nodes = [node for node in self.nodes if node not in largest_component]
             self.remove_nodes_edges(other_nodes)
-        
+
         print(f"Pruned {nodes_total - len(self.nodes)} nodes. Of {nodes_total} nodes.")
         print(f"Pruned {edges_total - len(self.edges)} edges. Of {edges_total} edges.")
 
         result = list(largest_component)
         print(f"Found largest connected component with {len(result)} nodes.")
         return result
-    
+
     def update_graph_version(self):
         edges = self.edges
         self.edges = {}
@@ -915,65 +979,133 @@ class ScrollGraph(Graph):
         self.compute_node_edges()
         return (factor_0, factor_not_0, factor_bad)
 
-    def build_graph(self, path_instances, start_point, num_processes=4, prune_unconnected=False):
-        blocks_tar_files = glob.glob(path_instances + '/*.tar')
+    def add_ground_truth_from_mesh(self, path_instances, mesh_file, continue_from=0):
+        umbilicus_path = os.path.join(os.path.dirname(path_instances), "umbilicus.txt")
+        # Load GT data
 
+        if continue_from <= 2:
+            set_up_mesh(mesh_file, path_instances, continue_from=continue_from) # each worker needs its own copy, initialize single threaded, then load the result into the threads
+        # Load the node instance, compare to scroll GT mesh, add winding angle information if instance within the GT mesh.
+        # use multiprocessing pool with initializer for scene
+        with tempfile.NamedTemporaryFile(suffix=".obj") as temp_file:
+            # copy mesh to tempfile
+            temp_path = temp_file.name
+            # os copy
+            os.system(f"cp {mesh_file} {temp_path}")
+
+            # with multiprocessing.Pool(processes=multiprocessing.cpu_count()//2, initializer=init_worker_build_GT, initargs=(mesh_file, path_instances)) as pool:
+            with multiprocessing.Pool(processes=min(48, multiprocessing.cpu_count()//2), initializer=init_worker_build_GT, initargs=(temp_path, path_instances)) as pool:
+                # PC instance path from node name
+                blocks_tar_files = glob.glob(path_instances + '/*.tar')
+                ## multithread
+                tasks = []
+                for i, blocks_tar_file in enumerate(blocks_tar_files):
+                    # Append tasks without passing the large constant data
+                    tasks.append((blocks_tar_file, umbilicus_path))
+
+                print(f"Processing {len(tasks)} blocks")
+
+                # tasks = tasks[:min(len(tasks), 10)] # DEBUG ONLY, TODO: remove
+                # print(f"Processing {len(tasks)} blocks")
+
+                # Use pool.imap to execute the worker function
+                results = list(tqdm(pool.imap(worker_build_GT, tasks), desc="Processing GT point clouds", total=len(tasks)))
+
+        # # single threaded
+        # init_worker_build_GT(mesh_file, path_instances)
+        # # PC instance path from node name
+        # blocks_tar_files = glob.glob(path_instances + '/*.tar')
+        # ## multithread
+        # tasks = []
+        # for i, blocks_tar_file in enumerate(blocks_tar_files):
+        #     # Append tasks without passing the large constant data
+        #     tasks.append((blocks_tar_file, umbilicus_path))
+
+        # print(f"Processing {len(tasks)} blocks")
+
+        # # tasks = tasks[:min(len(tasks), 10)] # DEBUG ONLY, TODO: remove
+        # # print(f"Processing {len(tasks)} blocks")
+
+        # # Use pool.imap to execute the worker function
+        # results = []
+        # for task in tqdm(tasks, desc="Processing GT point clouds"):
+        #     results.append(worker_build_GT(task))
+
+        # for all edges between two nodes with GT data, decide if edge is in-/valid
+        count_adjusted_nodes_windings = 0
+        for result in tqdm(results, desc="Adding GT data to nodes"):
+            for node_id, best_alignment in result:
+                if node_id in self.nodes:
+                    self.nodes[node_id]['winding_angle_gt'] = self.nodes[node_id]['winding_angle'] - best_alignment
+                    count_adjusted_nodes_windings += 1
+                else:
+                    print(f"Node {node_id} not found in graph.")
+        print(f"Adjusted winding angles for {count_adjusted_nodes_windings} nodes.")
+
+    def build_graph(self, path_instances, start_point, num_processes=4, prune_unconnected=False, start_fresh=True, gt_mesh_file=None, continue_from=0):
         #from original coordinates to instance coordinates
         start_block, patch_id = (0, 0, 0), 0
         self.start_block, self.patch_id, self.start_point = start_block, patch_id, start_point
 
-        print(f"Found {len(blocks_tar_files)} blocks.")
-        print("Building graph...")
+        if start_fresh:
+            blocks_tar_files = glob.glob(path_instances + '/*.tar')
 
-        # Create a pool of worker processes
-        with Pool(num_processes) as pool:
-            # Map the process_block function to each file
-            zipped_args = list(zip(blocks_tar_files, [path_instances] * len(blocks_tar_files), [self.overlapp_threshold] * len(blocks_tar_files), [self.umbilicus_data] * len(blocks_tar_files)))
-            results = list(tqdm(pool.imap(process_block, zipped_args), total=len(zipped_args)))
+            print(f"Found {len(blocks_tar_files)} blocks.")
+            print("Building graph...")
 
-        print(f"Number of results: {len(results)}")
+            # Create a pool of worker processes
+            with Pool(num_processes) as pool:
+                # Map the process_block function to each file
+                zipped_args = list(zip(blocks_tar_files, [path_instances] * len(blocks_tar_files), [self.overlapp_threshold] * len(blocks_tar_files), [self.umbilicus_data] * len(blocks_tar_files)))
+                results = list(tqdm(pool.imap(process_block, zipped_args), total=len(zipped_args)))
 
-        count_res = 0
-        patches_centroids = {}
-        # Process results from each worker
-        for score_sheets, score_switching_sheets, score_bad_edges, volume_centroids in tqdm(results, desc="Processing results"):
-            count_res += len(score_sheets)
-            # Calculate scores, add patches edges to graph, etc.
-            self.build_other_block_edges(score_sheets)
-            self.build_same_block_edges(score_switching_sheets)
-            # self.build_bad_edges(score_bad_edges)
-            patches_centroids.update(volume_centroids)
-        print(f"Number of results: {count_res}")
+            print(f"Number of results: {len(results)}")
 
-        # Define a wrapper function for umbilicus_xz_at_y
-        umbilicus_func = lambda z: umbilicus_xz_at_y(self.umbilicus_data, z)
+            count_res = 0
+            patches_centroids = {}
+            # Process results from each worker
+            for score_sheets, score_switching_sheets, score_bad_edges, volume_centroids in tqdm(results, desc="Processing results"):
+                count_res += len(score_sheets)
+                # Calculate scores, add patches edges to graph, etc.
+                self.build_other_block_edges(score_sheets)
+                self.build_same_block_edges(score_switching_sheets)
+                # self.build_bad_edges(score_bad_edges)
+                patches_centroids.update(volume_centroids)
+            print(f"Number of results: {count_res}")
 
-        # Add patches as nodes to graph
-        edges_keys = list(self.edges.keys())
-        nodes_from_edges = set()
-        for edge in tqdm(edges_keys, desc="Initializing nodes"):
-            nodes_from_edges.add(edge[0])
-            nodes_from_edges.add(edge[1])
-        for node in nodes_from_edges:
-            try:
-                umbilicus_point = umbilicus_func(patches_centroids[node][1])[[0, 2]]
-                umbilicus_vector = umbilicus_point - patches_centroids[node][[0, 2]]
-                angle = angle_between(umbilicus_vector) * 180.0 / np.pi
-                self.add_node(node, patches_centroids[node], winding_angle=angle)
-            except:
-                del self.edges[edge]
+            # Define a wrapper function for umbilicus_xz_at_y
+            umbilicus_func = lambda z: umbilicus_xz_at_y(self.umbilicus_data, z)
 
-        node_id = tuple((*start_block, patch_id))
-        print(f"Start node: {node_id}, nr nodes: {len(self.nodes)}, nr edges: {len(self.edges)}")
-        self.compute_node_edges()
-        if prune_unconnected:
-            print("Prunning unconnected nodes...")
-            self.largest_connected_component()
+            # Add patches as nodes to graph
+            edges_keys = list(self.edges.keys())
+            nodes_from_edges = set()
+            for edge in tqdm(edges_keys, desc="Initializing nodes"):
+                nodes_from_edges.add(edge[0])
+                nodes_from_edges.add(edge[1])
+            for node in nodes_from_edges:
+                try:
+                    umbilicus_point = umbilicus_func(patches_centroids[node][1])[[0, 2]]
+                    umbilicus_vector = umbilicus_point - patches_centroids[node][[0, 2]]
+                    angle = angle_between(umbilicus_vector) * 180.0 / np.pi
+                    self.add_node(node, patches_centroids[node], winding_angle=angle)
+                except:
+                    del self.edges[edge]
 
-        print(f"Nr nodes: {len(self.nodes)}, nr edges: {len(self.edges)}")
+            node_id = tuple((*start_block, patch_id))
+            print(f"Start node: {node_id}, nr nodes: {len(self.nodes)}, nr edges: {len(self.edges)}")
+            self.compute_node_edges()
+            if prune_unconnected:
+                print("Prunning unconnected nodes...")
+                self.largest_connected_component()
+
+            print(f"Nr nodes: {len(self.nodes)}, nr edges: {len(self.edges)}")
+
+        # Add GT data to nodes
+        if gt_mesh_file is not None:
+            self.add_ground_truth_from_mesh(path_instances, gt_mesh_file, continue_from=continue_from) # TODO
 
         return start_block, patch_id
-    
+
     def naked_graph(self):
         """
         Return a naked graph with only nodes.
@@ -984,7 +1116,7 @@ class ScrollGraph(Graph):
         for node in self.nodes:
             graph.add_node(node, self.nodes[node]['centroid'], winding_angle=self.nodes[node]['winding_angle'])
         return graph
-    
+
     def set_overlapp_threshold(self, overlapp_threshold):
         if hasattr(self, "overlapp_threshold"):
             # compare if the new threshold is different from the old one in any aspect or subaspect
@@ -1021,7 +1153,7 @@ class ScrollGraph(Graph):
                     c = 2
                 elif k != 0.0:
                     c = 5
-                # Create polyline points 
+                # Create polyline points
                 polyline_points = []
                 polyline_points_raw = []
                 to_add = True
@@ -1035,7 +1167,7 @@ class ScrollGraph(Graph):
                         break
                     polyline_points.append(Vec3(int(centroid[0]), int(centroid[1]), int(centroid[2])))
                     polyline_points_raw.append(Vec3(int(centroid[0]), int(centroid[1]), int(centroid[2])))
-                    
+
                     # Add an indicator which node of the edge has the smaller k value
                     if same_block:
                         if k > 0.0 and pi == 0:
@@ -1059,7 +1191,7 @@ class ScrollGraph(Graph):
                         indicator_color = 7
                     else:
                         indicator_color = 6  # Different color for the indicator
-                    
+
                     # Add the indicator line
                     msp.add_line(start_point, indicator_end, dxfattribs={'color': indicator_color})
 
@@ -1069,7 +1201,7 @@ class ScrollGraph(Graph):
 
         # Save the DXF document
         doc.saveas(filename)
-    
+
     def compare_polylines_graph(self, other, filename, color=1, min_z=None, max_z=None):
         # Create a new DXF document.
         doc = ezdxf.new('R2010')
@@ -1091,8 +1223,8 @@ class ScrollGraph(Graph):
                         c = 6
                     else:
                         c = 3
-                
-                # Create polyline points 
+
+                # Create polyline points
                 polyline_points = []
                 to_add = True
                 for pi, point in enumerate(edge):
@@ -1159,7 +1291,7 @@ class ScrollGraph(Graph):
                         subgraph.add_edge(node1, node2, self.edges[edge][k]['certainty'], k, self.edges[edge][k]['same_block'], bad_edge=self.edges[edge][k]['bad_edge'])
         subgraph.compute_node_edges()
         return subgraph
-    
+
     def graph_selected_nodes(self, nodes, ks, other_block_edges_only=False):
         print(f"Graphing {len(nodes)} nodes...")
         nodes = [tuple([int(n) for n in node]) for node in nodes]
@@ -1171,7 +1303,7 @@ class ScrollGraph(Graph):
             subgraph.add_node(node, self.nodes[node]['centroid'], winding_angle=self.nodes[node]['winding_angle'])
         # add ks
         subgraph.update_winding_angles(nodes, ks, update_winding_angles=False)
-        
+
         for edge in self.edges:
             node1, node2 = edge
             node1 = tuple([int(n) for n in node1])
@@ -1197,14 +1329,14 @@ class ScrollGraph(Graph):
                 if other_block_edges_only and self.edges[edge][k_search]['same_block']:
                     continue
                 subgraph.add_edge(node1, node2, self.edges[edge][k_search]['certainty'], k_search, self.edges[edge][k_search]['same_block'], bad_edge=self.edges[edge][k_search]['bad_edge'])
-        
+
         subgraph.compute_node_edges()
         return subgraph
-    
+
 def write_graph_to_binary(file_name, graph):
     """
     Writes the graph to a binary file.
-    
+
     Parameters:
     - file_name (str): The name of the file to write to.
     - graph (dict): A dictionary where the keys are node IDs and the values are lists of tuples.
@@ -1246,9 +1378,16 @@ def write_graph_to_binary(file_name, graph):
         f.write(struct.pack('I', len(nodes)))
         for node in nodes_list:
             # write the node z positioin as f
-            f.write(struct.pack('f', nodes[node]['centroid'][1]))
+            f.write(struct.pack('f', float(nodes[node]['centroid'][1])))
             # write the node winding angle as f
-            f.write(struct.pack('f', nodes[node]['winding_angle']))
+            f.write(struct.pack('f', float(nodes[node]['winding_angle'])))
+            # write gt flag as bool
+            f.write(struct.pack('?', bool('winding_angle_gt' in nodes[node])))
+            # write gt winding angle as f
+            if 'winding_angle_gt' in nodes[node]:
+                f.write(struct.pack('f', float(nodes[node]['winding_angle_gt'])))
+            else:
+                f.write(struct.pack('f', float(0.0)))
 
         for node in adj_list:
             # Write the node ID
@@ -1304,7 +1443,7 @@ def load_graph_winding_angle_from_binary(filename, graph):
     print(f"Number of nodes remaining: {len(nodes_graph)} from {num_nodes}. Number of nodes in graph: {len(graph.nodes)}")
     return graph
 
-def compute(overlapp_threshold, start_point, path, recompute=False, stop_event=None, toy_problem=False, update_graph=False, flip_winding_direction=False):
+def compute(overlapp_threshold, start_point, path, recompute=False, stop_event=None, toy_problem=False, update_graph=False, flip_winding_direction=False, gt_mesh_file=None, continue_from=0):
 
     umbilicus_path = os.path.dirname(path) + "/umbilicus.txt"
     start_block, patch_id = (0, 0, 0), 0
@@ -1317,15 +1456,24 @@ def compute(overlapp_threshold, start_point, path, recompute=False, stop_event=N
 
     recompute_path = path.replace("blocks", "scroll_graph_angular") + ".pkl"
     recompute = recompute or not os.path.exists(recompute_path)
-    
+
     # Build graph
     if recompute:
-        scroll_graph = ScrollGraph(overlapp_threshold, umbilicus_path)
+        start_fresh = continue_from <= -1
+        if start_fresh:
+            scroll_graph = ScrollGraph(overlapp_threshold, umbilicus_path)
+        else:
+            scroll_graph = load_graph(recompute_path)
+        count_gt_added = 0
+        for node in scroll_graph.nodes:
+            if 'winding_angle_gt' in scroll_graph.nodes[node]:
+                count_gt_added += 1
+        print(f"Number of nodes with GT winding angle: {count_gt_added}")
         num_processes = max(1, cpu_count() - 2)
-        start_block, patch_id = scroll_graph.build_graph(path, num_processes=num_processes, start_point=start_point, prune_unconnected=False)
+        start_block, patch_id = scroll_graph.build_graph(path, num_processes=num_processes, start_point=start_point, prune_unconnected=False, start_fresh=start_fresh, gt_mesh_file=gt_mesh_file, continue_from=continue_from)
         print("Saving built graph...")
         scroll_graph.save_graph(recompute_path)
-    
+
     # Graph generation area. CREATE subgraph or LOAD graph
     if update_graph:
         scroll_graph = load_graph(recompute_path)
@@ -1375,9 +1523,9 @@ def random_walks():
     start_point=[1350, 3600, 5000] # seg 3
     start_point=[1352, 3600, 5002] # unsuded / pyramid random walk indicator
     continue_segmentation = 0
-    overlapp_threshold = {"sample_ratio_score": 0.03, "display": False, "print_scores": True, "picked_scores_similarity": 0.7, "final_score_max": 1.5, "final_score_min": 0.0005, "score_threshold": 0.005, "fit_sheet": False, "cost_threshold": 17, "cost_percentile": 75, "cost_percentile_threshold": 14, 
+    overlapp_threshold = {"sample_ratio_score": 0.03, "display": False, "print_scores": True, "picked_scores_similarity": 0.7, "final_score_max": 1.5, "final_score_min": 0.0005, "score_threshold": 0.005, "fit_sheet": False, "cost_threshold": 17, "cost_percentile": 75, "cost_percentile_threshold": 14,
                           "cost_sheet_distance_threshold": 4.0, "rounddown_best_score": 0.005,
-                          "cost_threshold_prediction": 2.5, "min_prediction_threshold": 0.15, "nr_points_min": 200.0, "nr_points_max": 4000.0, "min_patch_points": 300.0, 
+                          "cost_threshold_prediction": 2.5, "min_prediction_threshold": 0.15, "nr_points_min": 200.0, "nr_points_max": 4000.0, "min_patch_points": 300.0,
                           "winding_angle_range": None, "multiple_instances_per_batch_factor": 1.0,
                           "epsilon": 1e-5, "angle_tolerance": 85, "max_threads": 30,
                           "min_points_winding_switch": 1000, "min_winding_switch_sheet_distance": 3, "max_winding_switch_sheet_distance": 10, "winding_switch_sheet_score_factor": 1.5, "winding_direction": 1.0,
@@ -1399,7 +1547,7 @@ def random_walks():
     max_tries = 6
     max_unchanged_walks = 100 * max_nr_walks # 30 * max_nr_walks
     recompute = 0
-    
+
     # Create an argument parser
     parser = argparse.ArgumentParser(description='Cut out ThaumatoAnakalyptor Papyrus Sheet. TAKE CARE TO SET THE "winding_direction" CORRECTLY!')
     parser.add_argument('--path', type=str, help='Papyrus instance patch path (containing .tar)', default=path)
@@ -1432,6 +1580,8 @@ def random_walks():
     parser.add_argument('--update_graph', help='Update graph', action='store_true')
     parser.add_argument('--create_graph', help='Create graph. Directly creates the binary .bin graph file from a previously constructed graph .pkl', action='store_true')
     parser.add_argument('--flip_winding_direction', help='Flip winding direction', action='store_true')
+    parser.add_argument('--gt_mesh_file', type=str, help='Ground truth mesh file', default=None)
+    parser.add_argument('--continue_from', type=int, help='Continue from a certain point in the graph', default=0)
 
     # Take arguments back over
     args = parser.parse_args()
@@ -1476,16 +1626,17 @@ def random_walks():
             scroll_graph = load_graph(save_path.replace("blocks", "subgraph_angular") + ".pkl")
         else:
             scroll_graph = load_graph(path.replace("blocks", "scroll_graph_angular") + ".pkl")
-        
+
         scroll_graph_solved = load_graph_winding_angle_from_binary(os.path.join(os.path.dirname(save_path), "output_graph.bin"), scroll_graph)
 
         # save graph pickle
         scroll_graph_solved.save_graph(save_path.replace("blocks", "graph_BP_solved") + ".pkl")
     else:
         # Compute
-        compute(overlapp_threshold=overlapp_threshold, start_point=start_point, path=path, recompute=recompute, toy_problem=args.toy_problem, update_graph=args.update_graph, flip_winding_direction=args.flip_winding_direction)
+        compute(overlapp_threshold=overlapp_threshold, start_point=start_point, path=path, recompute=recompute, toy_problem=args.toy_problem, update_graph=args.update_graph, flip_winding_direction=args.flip_winding_direction, gt_mesh_file=args.gt_mesh_file, continue_from=args.continue_from)
 
 if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn') # need sppawn because of open3d initialization deadlock in the init worker function
     random_walks()
 
 # Example command: python3 -m ThaumatoAnakalyptor.instances_to_graph --path /scroll.volpkg/working/scroll3_surface_points/point_cloud_colorized_verso_subvolume_blocks --recompute 1
